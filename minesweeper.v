@@ -16,7 +16,9 @@ module minesweeper
 		VGA_SYNC_N,						//	VGA SYNC
 		VGA_R,   						//	VGA Red[9:0]
 		VGA_G,	 						//	VGA Green[9:0]
-		VGA_B   						//	VGA Blue[9:0]
+		VGA_B,   						//	VGA Blue[9:0]
+		PS2_CLK,
+		PS2_DAT
 	);
 
 	input			CLOCK_50;				//	50 MHz
@@ -74,14 +76,126 @@ module minesweeper
 	// Put your code here. Your code should produce signals x,y,colour and writeEn
 	// for the VGA controller, in addition to any other functionality your design may require.
 	
+		//PS2 Code
+	/*****************************************************************************
+ *                             Port Declarations                             *
+ *****************************************************************************/
+
+// Inputs
+
+
+
+// Bidirectionals
+inout				PS2_CLK;
+inout				PS2_DAT;
+
+// Outputs
+//HEXs were here
+
+/*****************************************************************************
+ *                 Internal Wires and Registers Declarations                 *
+ *****************************************************************************/
+
+// Internal Wires
+wire		[7:0]	ps2_key_data;
+wire				ps2_key_pressed;
+
+
+// Internal Registers
+reg			[7:0]	last_data_received;
+wire [7:0] data_out;
+reg [7:0] data_out_reg;
+
+// State Machine Registers
+
+/*****************************************************************************
+ *                         Finite State Machine(s)                             *
+ *****************************************************************************/
+
+
+/*****************************************************************************
+ *                             Sequential Logic                              *
+ *****************************************************************************/
+
+always @(posedge CLOCK_50)
+begin
+//	if (KEY[0] == 1'b0)
+//		last_data_received <= 8'h00;
+	if (ps2_key_pressed == 1'b1)
+	  last_data_received <= ps2_key_data;
+	  data_out_reg <= data_out;
+	
+end
+
+
+
+/*****************************************************************************
+ *                            Combinational Logic                            *
+ *****************************************************************************/
+
+
+/*****************************************************************************
+ *                              Internal Modules                             *
+ *****************************************************************************/
+
+PS2_Controller PS2 (
+	// Inputs
+	.CLOCK_50				(CLOCK_50),
+	.reset				(~KEY[0]),
+
+	// Bidirectionals
+	.PS2_CLK			(PS2_CLK),
+ 	.PS2_DAT			(PS2_DAT),
+
+	// Outputs
+	.received_data		(ps2_key_data),
+	.received_data_en	(ps2_key_pressed)
+);
+	
+	wire [4:0] d;
+	reg [4:0] draw; //0 - down, 1 - up, 2 - left, 3 - right, 4 - escape
+	
+
+	always @(posedge CLOCK_50) 
+	 begin
+	   if(data_out_reg == 8'h72)
+		//trigger down
+		 draw[0] <= 1'b1;
+  
+		else if(data_out_reg  == 8'h75)
+			//trigger up
+		  draw[1] <= 1'b1;
+  
+		else if(data_out_reg  == 8'h6b)
+		  //trigger left
+		 draw[2] <= 1'b1;
+  
+		else if(data_out_reg  == 8'h74)
+		 //trigger right
+		 draw[3] <= 1'b1;
+  
+		else if(data_out_reg  == 8'h76)
+		  //trigger reset (ESC key)
+		 draw[4] <= 1'b1;
+
+		else
+		 draw <= 5'b00000;
+		 
+     end
+	 
+	 assign d = draw;
+	 assign data_out = ps2_key_pressed?ps2_key_data:8'h00;
+	
+	
 	grid_select G0( 
 			.clock(CLOCK_50), 
 			.resetn(resetn), 
-			.up(~KEY[1]), 
-		 	.down(~KEY[2]), 
-			.left(SW[1]), 
-			.right(~KEY[3]), 
-			.clear(SW[0]), 
+			.up(d[1]), 
+		 	.down(d[0]), 
+			.left(d[2]), 
+			.right(d[3]), 
+			.clear(d[4]),
+			.click(~KEY[1]),
 			
 			.Position(Position),
 			
@@ -100,7 +214,7 @@ module grid_select
 	(
 		input clock, resetn,
 		
-		input up, down, left, right, clear,
+		input up, down, left, right, clear, click,
 		
 		output [7:0] Xout,
 		output [6:0] Yout,
@@ -112,6 +226,9 @@ module grid_select
 	wire en_x, en_y, op_x, op_y;
 	wire plot_en, erase_en, clear_en, ld_clr;
 	wire countPul, grid_pulse, framePulse;
+	
+	wire mine_reset, mine_write, draw_mine, draw_click;
+	wire is_mine, end_pulse, reset_pulse;
 
 	control C0 (
 			.clock(clock),
@@ -122,15 +239,24 @@ module grid_select
 			.left(left),
 			.right(right),
 			.clear(clear),
+			.click(click),
 			
 			.countPul(countPul),
 			.grid_pulse(grid_pulse),
 			.framePulse(framePulse),
+			.reset_pulse(reset_pulse),
 			
 			.en_x(en_x),
 			.en_y(en_y),
 			.op_x(op_x),
 			.op_y(op_y),
+			
+			.is_mine(is_mine),
+			.mine_reset(mine_reset),
+			.draw_mine(draw_mine),
+			.draw_click(draw_click),
+			.end_pulse(end_pulse),
+			.mine_write(mine_write),
 			
 			.plot_en(plot_en),
 			.erase_en(erase_en),
@@ -158,12 +284,30 @@ module grid_select
 			
 			.Position(Position),
 			
+			.draw_mine(draw_mine),
+			.draw_click(draw_click),
+			
+			.writeEn(writeEn),
+			
 			.Xout(Xout),
 			.Yout(Yout),
 			.ColourOut(ColourOut)
-	);
+	);	
 	
-	assign writeEn = plot_en;			
+	mine_datapath D1 (
+			.clock(clock),
+			.resetn(resetn),
+			
+			.mine_reset(mine_reset),
+			.en_write(mine_write),
+			.en_shift(en_shift),
+			
+			.position(Position),
+			
+			.is_mine(is_mine),
+			.end_pulse(end_pulse),
+			.reset_pulse(reset_pulse)
+	);
 	
 endmodule
 
@@ -173,41 +317,47 @@ module control
 	(
 		input clock, resetn,
 		
-		input countPul, grid_pulse, framePulse,
-		input up, down, left, right, clear,
+		input countPul, grid_pulse, framePulse, end_pulse, reset_pulse,
+		input up, down, left, right, clear, click,
+		input is_mine,
 		
 		output reg en_x, en_y,
 		output reg op_x, op_y,
-		output reg plot_en, erase_en, clear_en, ld_clr
+		output reg plot_en, clear_en, ld_clr, mine_reset, mine_write,
+		output reg erase_en, draw_mine, draw_click, en_shift
 	);
 	
-	reg [4:0] current_state, next_state;
+	reg firstn; // first move indicator
+	reg [5:0] current_state, next_state;
 	
-	localparam 	S_ERASE_GRID 	= 5'd0,
-					S_INCR_GRID		= 5'd1,
-					S_CLEAR_WAIT	= 5'd2,
-					S_WAIT			= 5'd3,
-					S_ERASE_UP		= 5'd4,
-					S_ERASE_DOWN	= 5'd5,
-					S_ERASE_LEFT	= 5'd6,
-					S_ERASE_RIGHT	= 5'd7,
-					S_INCR_UP		= 5'd8,
-					S_INCR_DOWN		= 5'd9,
-					S_INCR_LEFT		= 5'd10,
-					S_INCR_RIGHT	= 5'd11,
-					S_DRAW			= 5'd12,
-					S_DRAW_WAIT		= 5'd13,
-					S_FRAME_WAIT	= 5'd14;
+	localparam 	S_ERASE_GRID 	= 6'd0,
+					S_INCR_GRID		= 6'd1,
+					S_CLEAR_WAIT	= 6'd2,
+					S_WAIT			= 6'd3,
+					S_ERASE_UP		= 6'd4,
+					S_ERASE_DOWN	= 6'd5,
+					S_ERASE_LEFT	= 6'd6,
+					S_ERASE_RIGHT	= 6'd7,
+					S_INCR_UP		= 6'd8,
+					S_INCR_DOWN		= 6'd9,
+					S_INCR_LEFT		= 6'd10,
+					S_INCR_RIGHT	= 6'd11,
+					S_DRAW			= 6'd12,
+					S_DRAW_WAIT		= 6'd13,
+					S_FRAME_WAIT	= 6'd14,
+					S_GENERATE		= 6'd15,
+					S_DRAW_CLICK_R	= 6'd16,
+					S_DRAW_MINE_R	= 6'd17,
+					S_INCR_PLOT_FAIL	= 6'd18,
+					S_FAIL_WAIT		= 6'd19;
 					
-	
-
 	// State Table
 	always@(*)
 	begin: state_table
 		case(current_state)
 			S_ERASE_GRID: next_state = countPul ? S_INCR_GRID : S_ERASE_GRID;
 			S_INCR_GRID: next_state = grid_pulse ? S_CLEAR_WAIT : S_ERASE_GRID;
-			S_CLEAR_WAIT: next_state = clear ? S_CLEAR_WAIT : S_WAIT;
+			S_CLEAR_WAIT: next_state = reset_pulse ? S_DRAW_WAIT : S_CLEAR_WAIT;
 			S_WAIT:
 				begin
 					if(up == 1'b1)
@@ -220,6 +370,12 @@ module control
 						next_state = S_ERASE_RIGHT;
 					else if(clear == 1'b1)
 						next_state = S_ERASE_GRID;
+					else if(click == 1'b1 && firstn == 1'b0)
+						next_state = S_GENERATE;
+					else if(click == 1'b1 && firstn == 1'b1 && is_mine == 1'b0)
+						next_state = S_DRAW_CLICK_R;
+					else if(click == 1'b1 && firstn == 1'b1 && is_mine == 1'b1)
+						next_state = S_DRAW_MINE_R;
 					else
 						next_state = S_WAIT;
 				end
@@ -232,8 +388,13 @@ module control
 			S_INCR_LEFT: next_state = S_DRAW;
 			S_INCR_RIGHT: next_state = S_DRAW;
 			S_DRAW: next_state = countPul ? S_DRAW_WAIT : S_DRAW;
-			S_DRAW_WAIT: next_state = ( up == 1'b0 && down == 1'b0 && left == 1'b0 && right == 1'b0) ? S_FRAME_WAIT : S_DRAW_WAIT;
+			S_DRAW_WAIT: next_state = ( up == 1'b0 && down == 1'b0 && left == 1'b0 && right == 1'b0 && click == 1'b0 && clear == 1'b0) ? S_FRAME_WAIT : S_DRAW_WAIT;
 			S_FRAME_WAIT: next_state = framePulse ? S_WAIT : S_FRAME_WAIT;
+			S_GENERATE: next_state = end_pulse ? S_DRAW_CLICK_R : S_GENERATE;
+			S_DRAW_CLICK_R: next_state = countPul ? S_DRAW_WAIT : S_DRAW_CLICK_R;
+			S_DRAW_MINE_R: next_state = countPul ? S_INCR_PLOT_FAIL : S_DRAW_MINE_R;
+			S_INCR_PLOT_FAIL: next_state = grid_pulse ? S_FAIL_WAIT : (is_mine ? S_DRAW_MINE_R : S_INCR_PLOT_FAIL);
+			S_FAIL_WAIT: next_state = clear ? S_ERASE_GRID : S_FAIL_WAIT;
 			default: next_state = S_ERASE_GRID;
 		endcase
 	end
@@ -249,6 +410,11 @@ module control
 		erase_en = 1'b0;
 		clear_en = 1'b0;
 		ld_clr = 1'b0;
+		mine_reset = 1'b0;
+		mine_write = 1'b0;
+		draw_mine = 1'b0;
+		draw_click = 1'b0;
+		en_shift = 1'b0;
 		
 		case(current_state)
 			S_ERASE_GRID:
@@ -258,6 +424,8 @@ module control
 					ld_clr = 1'b1;
 				end
 			S_INCR_GRID: clear_en = 1'b1;
+			S_CLEAR_WAIT: mine_reset = 1'b1;
+			S_WAIT: en_shift = 1'b1;
 			S_ERASE_UP:
 				begin
 					erase_en = 1'b1;
@@ -299,6 +467,23 @@ module control
 					op_x = 1'b0;
 				end
 			S_DRAW: plot_en = 1'b1;
+			S_GENERATE: mine_write = 1'b1;
+			S_DRAW_CLICK_R:
+				begin
+					draw_click = 1'b1;
+					plot_en = 1'b1;
+				end
+			S_DRAW_MINE_R:
+				begin
+					draw_mine = 1'b1;
+					plot_en = 1'b1;
+					ld_clr = 1'b1;
+				end
+			S_INCR_PLOT_FAIL:
+				begin
+					clear_en = 1'b1;
+					ld_clr = 1'b1;
+				end
 		endcase
 	end
 	
@@ -309,6 +494,14 @@ module control
 			current_state <= S_ERASE_GRID;
 		else
 			current_state <= next_state;
+	end
+	
+	// register to hold if first move has occurred yet
+	always@(posedge clock)begin
+		if(resetn == 1'b0 || mine_reset == 1'b1)
+			firstn <= 1'b0;
+		else if(click == 1'b1)
+			firstn <= 1'b1;
 	end
 
 endmodule
@@ -322,8 +515,11 @@ module datapath
 		input en_x, en_y,
 		input op_x, op_y,
 		input plot_en, erase_en, clear_en, ld_clr,
+		input draw_click, draw_mine,
 		
 		output countPul, grid_pulse, framePulse,
+		
+		output reg writeEn,
 		
 		output [5:0] Position,
 		
@@ -334,6 +530,9 @@ module datapath
 	
 	reg [2:0] grid_x, grid_y;
 	reg [5:0] plot_count, grid_count;
+	reg [5:0] address;
+	
+	reg eraser, clickr, miner;
 	
 	wire [5:0] grey_square, red_square; // correspond to outputs of RAM module
 	wire [8:0] Xpos;
@@ -365,7 +564,7 @@ module datapath
 			end
 	end
 	
-	assign Position = {grid_x, grid_y};
+	assign Position = {(ld_clr ? grid_count[5:3] : grid_x), (ld_clr ? grid_count[2:0] : grid_y)};
 	
 	assign Xpos = (ld_clr ? grid_count[5:3] : grid_x) * 4'b1000;
 	assign Ypos = (ld_clr ? grid_count[2:0] : grid_y) * 4'b1000;
@@ -375,32 +574,34 @@ module datapath
 	
 	// registers for x and y colours by pixel, as well as erase_en
 	// for Xout and Yout and eraser
-//	always@(posedge clock)begin
-//		if(resetn == 1'b0)
-//			begin
-//				Xout <= 8'b00000000;
-//				Yout <= 7'b0000000;
-//				eraser <= 1'b0;
-//				plotter <= 1'b0;
-//			end
-//		else
-//			begin
-//				Xout <= Xpos + plot_count[5:3] + 8'd48; // shift to centre of screen
-//				Yout <= Ypos + plot_count[2:0] + 7'd28; // shift to centre of screen (48, 28)
-//				eraser <= erase_en; // eraser is just a clock cycle behind erase_en
-//				plotter <= plot_en;
-//			end
-//	end
+	always@(posedge clock)begin
+		if(resetn == 1'b0)
+			begin
+				eraser <= 1'b0;
+				clickr <= 1'b0;
+				miner <= 1'b0;
+				plot_count <= 6'b000000;
+				writeEn <= 1'b0;
+			end
+		else
+			begin
+				eraser <= erase_en; // eraser is just a clock cycle behind erase_en
+				clickr <= draw_click;
+				miner <= draw_mine;
+				plot_count <= address;
+				writeEn <= plot_en;
+			end
+	end
 	
 	// Plot counter
 	always@(posedge clock)begin
 		if(resetn == 1'b0)
-			plot_count <= 6'b000000;
+			address <= 6'b000000;
 		else if(plot_en == 1'b1)
-			plot_count <= plot_count + 1;
+			address <= address + 1;
 	end
 	
-	assign countPul = (plot_count == 6'b111111) ? 1'b1 : 1'b0;
+	assign countPul = (address == 6'b111111) ? 1'b1 : 1'b0;
 	
 	always@(posedge clock)begin
 		if(resetn == 1'b0)
@@ -415,11 +616,11 @@ module datapath
 	// Colour management
 	
 	// RAM Modules
-	red_square_64x6 R0( .address(plot_count), .clock(clock), .data(6'b000000), .wren(1'b0), .q(red_square)); // RAM for a red square image
-	grey_square_64x6 R1( .address(plot_count), .clock(clock), .data(6'b000000), .wren(1'b0), .q(grey_square)); // RAM for a grey square image
+	red_square_64x6 R0( .address(address), .clock(clock), .data(6'b000000), .wren(1'b0), .q(red_square)); // RAM for a red square image
+	grey_square_64x6 R1( .address(address), .clock(clock), .data(6'b000000), .wren(1'b0), .q(grey_square)); // RAM for a grey square image
 	
 	// MUX
-	assign ColourOut = erase_en ? grey_square : (6'b110000 + grey_square);
+	assign ColourOut = clickr ? 6'b111111 : (miner ? (6'b011101) : (eraser ? grey_square : (6'b110000 + grey_square)));
 	
 	// Rate Divider the counts 1 frame
 	RateDivider R2(.R(26'd833333), .Clock(clock), .Qpul(framePulse));
